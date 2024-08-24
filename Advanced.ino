@@ -2,26 +2,43 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
+#include <WebSocketsServer.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <EEPROM.h>
-const char* hostname = "12345678";
+
 const char* defaultAPSSID = "ESP8266_Config";
 const char* defaultAPPassword = "12345678";
 const char* FIRMWARE_VERSION = "1";
 const int buttonPin = D0;  // Пин кнопки
+
 ESP8266WebServer server(80);
+WebSocketsServer webSocket(81); 
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "ntp1.ntp-servers.net", 3600, 60000);
+NTPClient timeClient(ntpUDP, "time.cloudflare.com", 0, 60000);
+IPAddress dns(1, 1, 1, 1);
 
 struct Settings {
-  char ssid[64];
-  char password[64];
+  char ssid[128];
+  char password[128];
 IPAddress local_ip;
 IPAddress gateway;
 IPAddress subnet;
 int timezoneOffset;
 } settings;
+
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    if (type == WStype_TEXT) {
+        // Обработка текста от клиента
+        Serial.printf("Received text: %s\n", payload);
+    }
+}
+
+void sendToConsole(String message) {
+    webSocket.broadcastTXT(message);
+}
+
 
 //Функция для получения времени
 String getCurrentTime() {
@@ -33,8 +50,8 @@ String getCurrentTime() {
 // Функция для очистки EEPROM
 void clearEEPROM() {
   Serial.println("Clearing EEPROM...");
-  EEPROM.begin(512);
-  for (int i = 0; i < 512; i++) {
+  EEPROM.begin(1024);
+  for (int i = 0; i < 1024; i++) {
     EEPROM.write(i, 0);
   }
   EEPROM.end();
@@ -43,7 +60,7 @@ void clearEEPROM() {
 // Функция для загрузки настроек из EEPROM
 void loadSettings() {
   Serial.println("Loading settings from EEPROM...");
-  EEPROM.begin(512);
+  EEPROM.begin(1024);
   EEPROM.get(0, settings);
   EEPROM.end();
   Serial.println("Settings loaded:");
@@ -53,173 +70,13 @@ void loadSettings() {
 // Функция для сохранения настроек в EEPROM
 void saveSettings() {
   Serial.println("Saving settings to EEPROM...");
-  EEPROM.begin(512);
+  EEPROM.begin(1024);
   EEPROM.put(0, settings);
   EEPROM.end();
   Serial.println("Settings saved.");
 }
 
-// Главная страница
-void handleRoot() {
-  Serial.println("Serving main menu...");
-  String html = "<html><head>";
-  html += "<meta charset='UTF-8'>";
-  html += "<style>";
-  html += "body { text-align: center; background-color: #f0f0f0; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }";
-  html += ".container { padding: 20px; max-width: 400px; margin: auto; background-color: #fff; border-radius: 8px; box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); }";
-  html += "h2 { color: #0056b3; }";
-  html += "button { width: 100%; padding: 10px; margin: 10px 0; font-size: 18px; border: none; color: white; cursor: pointer; border-radius: 4px; }";
-  html += "button.update { background-color: #28a745; }";
-  html += "button.settings { background-color: #17a2b8; }";
-  html += "button.info { background-color: #ffc107; color: #333; }";
-  html += "button.reboot { background-color: #dc3545; }";
-  html += "</style>";
- html += "<script>";
-  
-  // JavaScript для обновления времени
-  html += "function updateTime() {";
-  html += "  var xhr = new XMLHttpRequest();";
-  html += "  xhr.onreadystatechange = function() {";
-  html += "    if (xhr.readyState == 4 && xhr.status == 200) {";
-  html += "      document.getElementById('time').innerHTML = xhr.responseText;";
-  html += "    }";
-  html += "  };";
-  html += "  xhr.open('GET', '/getTime', true);";
-  html += "  xhr.send();";
-  html += "}";
-  html += "setInterval(updateTime, 1000);";  // Обновление каждую секунду
-  html += "</script>";
-  html += "</head><body>";
 
-  // Добавляем текущую дату и время в шапку страницы с id для обновления
-  html += "<div class='time'>Текущее время: <span id='time'>" + getCurrentTime() + "</span></div>";
-
-  html += "<div class='container'>";
-  html += "<h2>Главное меню</h2>";
-  html += "<button class='update' onclick='location.href=\"/otaUpdatePage\"'>Обновление прошивки</button>";
-  html += "<button class='settings' onclick='location.href=\"/settings\"'>Настройки</button>";
-  html += "<button class='info' onclick='location.href=\"/info\"'>Информация</button>";
-  html += "<button class='reboot' onclick='location.href=\"/reboot\"'>Перезагрузка</button>";
-  html += "</div>";
-  html += "</body></html>";
-
-  server.send(200, "text/html", html);
-}
-
-// Страница обновления прошивки
-void handleUpdatePage() {
-  Serial.println("Serving OTA update page...");
-  String html = "<html><head>";
-  html += "<meta charset='UTF-8'>";
-  html += "<style>";
-  html += "body { text-align: center; background-color: #f0f0f0; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }";
-  html += ".container { padding: 20px; max-width: 400px; margin: auto; background-color: #fff; border-radius: 8px; box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); }";
-  html += "h2 { color: #0056b3; }";
-  html += "input, button { width: 100%; padding: 10px; margin: 10px 0; font-size: 16px; border-radius: 4px; border: 1px solid #ccc; }";
-  html += "button { background-color: #28a745; color: white; border: none; cursor: pointer; }";
-  html += "button:hover { background-color: #218838; }";
-  html += "</style>";
- html += "<script>";
-  
-  // JavaScript для обновления времени
-  html += "function updateTime() {";
-  html += "  var xhr = new XMLHttpRequest();";
-  html += "  xhr.onreadystatechange = function() {";
-  html += "    if (xhr.readyState == 4 && xhr.status == 200) {";
-  html += "      document.getElementById('time').innerHTML = xhr.responseText;";
-  html += "    }";
-  html += "  };";
-  html += "  xhr.open('GET', '/getTime', true);";
-  html += "  xhr.send();";
-  html += "}";
-  html += "setInterval(updateTime, 1000);";  // Обновление каждую секунду
-  html += "</script>";
-  html += "</head><body>";
-
-  // Добавляем текущую дату и время в шапку страницы с id для обновления
-  html += "<div class='time'>Текущее время: <span id='time'>" + getCurrentTime() + "</span></div>";
- 
-  html += "<div class='container'>";
-  html += "<h2>Обновление через веб-сервер</h2>";
-  html += "<form action=\"/otaUpdate\" method=\"get\">";
-  html += "Ссылка OTA:<br><input type=\"text\" name=\"url\" value=\"http://example.com/firmware.bin\"><br>";
-  html += "<button type=\"submit\">Начать обновление</button>";
-  html += "</form>";
-  html += "<h2>Обновление путем загрузки файла</h2>";
-  html += "<form method=\"POST\" action=\"/update\" enctype=\"multipart/form-data\">";
-  html += "<input type=\"file\" name=\"update\"><br>";
-  html += "<button type=\"submit\">Начать обновление</button>";
-  html += "</form>";
-  html += "<br><button onclick='location.href=\"/\"'>Главное меню</button>";
-  html += "</div>";
-  html += "</body></html>";
-
-  server.send(200, "text/html", html);
-}
-
-// Страница настроек
-void handleSettingsPage() {
-    Serial.println("Serving settings page...");
-
-    // Создание буферов для строк IP-адресов
-    char local_ip[32];
-    char gateway[32];
-    char subnet[32];
-    char timezone[8];  // Буфер для смещения времени
-
-    // Преобразование IP-адресов в строки
-    snprintf(local_ip, sizeof(local_ip), "%d.%d.%d.%d", settings.local_ip[0], settings.local_ip[1], settings.local_ip[2], settings.local_ip[3]);
-    snprintf(gateway, sizeof(gateway), "%d.%d.%d.%d", settings.gateway[0], settings.gateway[1], settings.gateway[2], settings.gateway[3]);
-    snprintf(subnet, sizeof(subnet), "%d.%d.%d.%d", settings.subnet[0], settings.subnet[1], settings.subnet[2], settings.subnet[3]);
-    snprintf(timezone, sizeof(timezone), "%d", settings.timezoneOffset / 3600);
- 
-     String html = "<html><head>";
-  html += "<meta charset='UTF-8'>";
-  html += "<style>";
-  html += "body { text-align: center; background-color: #f0f0f0; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }";
-  html += ".container { padding: 20px; max-width: 400px; margin: auto; background-color: #fff; border-radius: 8px; box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); }";
-  html += "h2 { color: #0056b3; }";
-  html += "input, button { width: 100%; padding: 10px; margin: 10px 0; font-size: 16px; border-radius: 4px; border: 1px solid #ccc; }";
-  html += "button { background-color: #17a2b8; color: white; border: none; cursor: pointer; }";
-  html += "button:hover { background-color: #138496; }";
-  html += "</style>";
- html += "<script>";
-  
-  // JavaScript для обновления времени
-  html += "function updateTime() {";
-  html += "  var xhr = new XMLHttpRequest();";
-  html += "  xhr.onreadystatechange = function() {";
-  html += "    if (xhr.readyState == 4 && xhr.status == 200) {";
-  html += "      document.getElementById('time').innerHTML = xhr.responseText;";
-  html += "    }";
-  html += "  };";
-  html += "  xhr.open('GET', '/getTime', true);";
-  html += "  xhr.send();";
-  html += "}";
-  html += "setInterval(updateTime, 1000);";  // Обновление каждую секунду
-  html += "</script>";
-  html += "</head><body>";
-
-  // Добавляем текущую дату и время в шапку страницы с id для обновления
-  html += "<div class='time'>Текущее время: <span id='time'>" + getCurrentTime() + "</span></div>";
-
-  html += "<div class='container'>";
-  html += "<h2>Настройки WiFi и Сети</h2>";
-  html += "<form action=\"/saveSettings\" method=\"post\">";
-    html += "SSID:<br><input type=\"text\" name=\"ssid\" value=\"" + String(settings.ssid) + "\"><br>";
-    html += "Пароль:<br><input type=\"password\" name=\"password\" value=\"" + String(settings.password) + "\"><br>";
-    html += "IP Адрес:<br><input type=\"text\" name=\"local_ip\" value=\"" + String(local_ip) + "\"><br>";
-    html += "Шлюз:<br><input type=\"text\" name=\"gateway\" value=\"" + String(gateway) + "\"><br>";
-    html += "Маска подсети:<br><input type=\"text\" name=\"subnet\" value=\"" + String(subnet) + "\"><br>";
-    html += "Смещение часового пояса (в часах):<br><input type=\"number\" step=\"0.5\" name=\"timezone\" value=\"" + String(timezone)+ "\"><br>";
-    html += "<button type=\"submit\">Сохранить настройки</button>";
-    html += "</form>";
-    html += "<br><button onclick='location.href=\"/\"'>Главное меню</button>";
-    html += "</div>";
-    html += "</body></html>";
-
-    server.send(200, "text/html", html);
-}
 
 
 // Функция для сохранения настроек
@@ -227,11 +84,11 @@ void handleSaveSettings() {
     Serial.println("Saving settings from web interface...");
 
     // Используем статические массивы вместо String
-    char ssid[64];
-    char password[64];
-    char local_ip_str[16];
-    char gateway_str[16];
-    char subnet_str[16];
+    char ssid[128];
+    char password[128];
+    char local_ip_str[128];
+    char gateway_str[128];
+    char subnet_str[128];
     
     server.arg("ssid").toCharArray(ssid, sizeof(ssid));
     server.arg("password").toCharArray(password, sizeof(password));
@@ -249,7 +106,7 @@ void handleSaveSettings() {
         server.send(400, "text/plain", "Пароль слишком длинный!");
         return;
     }
-
+    
     // Копируем строки в структуру настроек
     strncpy(settings.ssid, ssid, sizeof(settings.ssid));
     strncpy(settings.password, password, sizeof(settings.password));
@@ -268,13 +125,14 @@ void handleSaveSettings() {
     // Сохранение настроек и перезагрузка
     saveSettings();
 
+    server.send(200, "text/html", "<html><body><h2>Настройки сохранены! Перезагрузка...</h2></body> </html>" "<meta charset='UTF-8'>");
+    delay(2000);
     Serial.println("Disconnecting from WiFi and applying new settings...");
     WiFi.disconnect();
-    WiFi.config(settings.local_ip, settings.gateway, settings.subnet);
+    WiFi.config(settings.local_ip, settings.gateway, settings.subnet, dns);
     WiFi.begin(settings.ssid, settings.password);
 
-    server.send(200, "text/html", "<html><body><h2>Настройки сохранены! Перезагрузка...</h2></body></html>");
-    delay(2000);
+    delay(1000);
     ESP.restart();
 }
 
@@ -287,24 +145,24 @@ void handleOTAUpdate() {
   if (url.length() > 0) {
     WiFiClient client;
     t_httpUpdate_return ret = ESPhttpUpdate.update(client, url);
-
+     
     switch (ret) {
       case HTTP_UPDATE_FAILED:
         Serial.println("OTA Update Failed: " + String(ESPhttpUpdate.getLastErrorString()));
-        server.send(500, "text/plain", "Обновление не удалось: " + String(ESPhttpUpdate.getLastErrorString()));
+        server.send(500, "text/plain", "error: "  + String(ESPhttpUpdate.getLastErrorString()));
         break;
       case HTTP_UPDATE_NO_UPDATES:
         Serial.println("OTA Update: No updates available");
-        server.send(500, "text/plain", "Нет доступных обновлений");
+        server.send(500, "text/html","<html><body><h2>Нет доступных обновлений</h2></body> </html>" "<meta charset='UTF-8'>");
         break;
       case HTTP_UPDATE_OK:
         Serial.println("OTA Update: Success!");
-        server.send(200, "text/plain", "Обновление успешно завершено!");
+        server.send(200, "text/html", "<html><body><h2>Обновление успешно завершено! Перезагрузка...</h2></body> </html>" "<meta charset='UTF-8'>");
         break;
-    }
+    }              
   } else {
     Serial.println("OTA Update: URL not provided");
-    server.send(400, "text/plain", "Требуется URL!");
+    server.send(400, "text/plain", "Требуется URL!" "<meta charset='UTF-8'>");
   }
 }
 
@@ -326,85 +184,23 @@ void handleFileUpload() {
   } else if (upload.status == UPLOAD_FILE_END) {
     if (Update.end(true)) {
       Serial.printf("Upload: END, Size: %u\nПерезагрузка...\n", upload.totalSize);
-      server.send(200, "text/plain", "Обновление завершено.");
-      delay(1000);
-      ESP.restart();
+      server.send(200, "text/html", "<html><body><h2>Обновление завершено. </h2></body> </html>" "<meta charset='UTF-8'>");
+      delay(2000);
+      ESP.restart();  
     } else {
       Update.printError(Serial);
-      server.send(500, "text/plain", "Ошибка при завершении обновления.");
+      server.send(500, "text/html", "<html><body><h2>Ошибка при завершении обновления. </h2></body> </html>" "<meta charset='UTF-8'>");
     }
   }
 }
 
-// Страница информации
-void handleInfoPage() {
-  Serial.println("Serving information page...");
-  String html = "<html><head>";
-  html += "<meta charset='UTF-8'>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>";
-  html += "body { text-align: center; background-color: #f4f4f9; color: #333; font-family: 'Roboto', sans-serif; }";
-  html += ".container { max-width: 600px; margin: 50px auto; padding: 20px; background-color: #fff; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); border-radius: 10px; }";
-  html += "h2 { color: #fb8c00; }";
-  html += ".info-box { text-align: left; padding: 10px; border: 1px solid #ccc; margin-bottom: 10px; background-color: #f9f9f9; }";
-  html += ".info-box span { display: block; font-weight: bold; color: #333; }";
-  html += "</style>";
-  html += "</head><body>";
-  html += "<div class='container'>";
-  html += "<h2>Системная информация</h2>";
 
-  html += "<div class='info-box'>";
-  html += "<span>Имя хоста:</span> " + String(hostname);
-  html += "</div>";
-
-
-  html += "<div class='info-box'>";
-  html += "<span>Время работы:</span> " + String(millis() / 1000) + " секунд";
-  html += "</div>";
-
-  html += "<div class='info-box'>";
-  html += "<span>Версия прошивки:</span> " + String(FIRMWARE_VERSION);
-  html += "</div>";
-
-  html += "<div class='info-box'>";
-  html += "<span>Скорость процессора:</span> " + String(ESP.getCpuFreqMHz()) + " МГц";
-  html += "</div>";
-
-  html += "<br><button onclick='location.href=\"/\"'>Главное меню</button>";
-  html += "</div>";
-  html += "</body></html>";
-
-  server.send(200, "text/html", html);
-}
 // Обр врем
 void handleGetTime() {
   server.send(200, "text/plain", getCurrentTime());
 }
 
 
-// Перезагрузка устройства
-void handleRebootPage() {
-  Serial.println("Rebooting...");
-  String html = "<html><head>";
-  html += "<meta charset='UTF-8'>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>";
-  html += "body { text-align: center; background-color: #f4f4f9; color: #333; font-family: 'Roboto', sans-serif; }";
-  html += ".container { max-width: 600px; margin: 50px auto; padding: 20px; background-color: #fff; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); border-radius: 10px; }";
-  html += "h2 { color: #e53935; }";
-  html += "button { width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; border-radius: 5px; border: none; cursor: pointer; background-color: #e53935; color: #fff; }";
-  html += "</style>";
-  html += "</head><body>";
-  html += "<div class='container'>";
-  html += "<h2>Перезагрузка устройства...</h2>";
-  html += "<br><button onclick='location.href=\"/\"'>Главное меню</button>";
-  html += "</div>";
-  html += "</body></html>";
-
-  server.send(200, "text/html", html);
-  delay(1000);
-  ESP.restart();
-}
 
 
 void setup() {
@@ -412,6 +208,12 @@ void setup() {
   Serial.println("Booting...");
 
   loadSettings();  // Загрузка настроек из EEPROM
+
+    // Загрузка веб сокета
+    webSocket.begin();
+    webSocket.onEvent(webSocketEvent);
+    Serial.println("WebSocket server started");
+
 
   // Если SSID не задан, то запускаем точку доступа
   if (String(settings.ssid) == "") {
@@ -423,7 +225,7 @@ void setup() {
   } else {
     Serial.println("Connecting to WiFi...");
     WiFi.begin(settings.ssid, settings.password);
-    WiFi.config(settings.local_ip, settings.gateway, settings.subnet);
+    WiFi.config(settings.local_ip, settings.gateway, settings.subnet, dns);
 
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
@@ -442,15 +244,17 @@ void setup() {
   server.on("/update", HTTP_POST, [](){}, handleFileUpload);
   server.on("/otaUpdate", handleOTAUpdate);
   server.on("/info", handleInfoPage);
+  server.on("/console", handleConsolePage);
   server.on("/reboot", handleRebootPage);
   server.on("/getTime", handleGetTime);
+  
   server.begin();
   Serial.println("HTTP server started");
 }
 
 void loop() {
-  server.handleClient();
 
+  
   // Проверка состояния кнопки
   if (digitalRead(buttonPin) == LOW) {  
     delay(200);  // Антидребезг
@@ -459,8 +263,9 @@ void loop() {
       ESP.restart();  // Перезагрузка после очистки EEPROM
     }
   }
-
+   
   if (!timeClient.update()) {
     timeClient.forceUpdate();
   }
+  server.handleClient();
 }
